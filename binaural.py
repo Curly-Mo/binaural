@@ -1,17 +1,19 @@
+#!/usr/bin/env python
 import math
+import argparse
 
 import numpy as np
-import librosa
+import audio
 
 
 def hrtf_file(audio_path, azimuth, elevation=0, output=None):
     """
     Read mono audio file and write binaural wav file to output
     """
-    y, sr = librosa.load(audio_path)
+    y, sr = audio.load(audio_path)
     y = hrtf(y, sr, azimuth, elevation)
     if output:
-        librosa.output.write_wav(output, y, sr, norm=False)
+        audio.write_wav(output, y, sr, norm=False)
     return y
 
 
@@ -27,11 +29,12 @@ def hrtf(y, sr, azimuth, elevation=0):
         Binaural stereo signal (2 row np array)
     """
     ITD = compute_itd(azimuth, elevation)
-    y = apply_itd(y, ITD, sr)
+    print(ITD)
+    y = apply_itd(y, sr, ITD)
     return y
 
 
-def compute_itd(azimuth, elevation=0, ear_distance=0.215):
+def compute_itd(azimuth, elevation=0, distance=1, ear_distance=0.215):
     """
     Compute the Interaural Time Difference given the azimuth angle
     and distance between ears.
@@ -39,6 +42,7 @@ def compute_itd(azimuth, elevation=0, ear_distance=0.215):
     Args:
         azimuth: Angle in degrees (-180 < θ < 180)
         elevation: Angle in degrees (-90 < θ < 90)
+        distance: Distance of source from listener in meters
         ear_distance: distance between ears in meters
     Returns:
         Interaural Time Difference (ITD)
@@ -52,11 +56,16 @@ def compute_itd(azimuth, elevation=0, ear_distance=0.215):
     # Woodworth's formula with elevation
     # ITD = (radius/c) * (math.sin(theta) + theta) * math.cos(phi)
     # Larcher and Jot equation
-    ITD = (radius/c) * (math.asin(math.cos(phi)*math.sin(theta)) + math.cos(phi)*math.sin(theta))
+    # ITD = (radius/c) * (math.asin(math.cos(phi)*math.sin(theta)) + math.cos(phi)*math.sin(theta))
+    # Colin's Formula
+    distance_r = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.sin(-theta))
+    distance_l = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.sin(theta))
+    IDD = distance_r - distance_l
+    ITD = IDD / c
     return ITD
 
 
-def apply_itd(y, ITD, sr):
+def apply_itd(y, sr, ITD):
     left = y
     right = y
     if ITD > 0:
@@ -77,5 +86,27 @@ def delay(y, time, sr):
     """
     Prepend zeros to delay signal by time seconds
     """
-    y = np.pad(y, pad_width=[round(time*sr), 0], mode='constant', constant_values=0)
+    y = np.pad(
+        y,
+        pad_width=[round(time*sr), 0],
+        mode='constant',
+        constant_values=0
+    )
     return y
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description="Create a binaural stereo wav file from a mono audio file."
+    )
+    parser.add_argument('audio_path', type=str,
+                        help='Path to input audio file')
+    parser.add_argument('azimuth', type=float,
+                        help='Azimuth angle in degrees')
+    parser.add_argument('elevation', type=float,
+                        help='Elevation angle in degrees')
+    parser.add_argument('output', type=str,
+                        help='Output file')
+    args = parser.parse_args()
+
+    hrtf_file(**vars(args))
