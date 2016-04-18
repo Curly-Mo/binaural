@@ -58,9 +58,13 @@ def compute_itd(azimuth, elevation=0, distance=1, ear_distance=0.215):
     # Larcher and Jot equation
     # ITD = (radius/c) * (math.asin(math.cos(phi)*math.sin(theta)) + math.cos(phi)*math.sin(theta))
     # Colin's Formula
-    distance_r = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.sin(-theta))
-    distance_l = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.sin(theta))
-    IDD = distance_r - distance_l
+    #distance_r = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.sin(-theta))
+    #distance_l = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.sin(theta))
+    #IDD = distance_r - distance_l
+    #ITD = IDD / c
+    # Colin's Formula 2
+    #IDD = radius * (math.pi - 2*(math.pi - theta))
+    IDD = radius * (2*theta - math.pi)
     ITD = IDD / c
     return ITD
 
