@@ -5,6 +5,7 @@ Mostly the core dsp tools collected from librosa, but with fewer dependencies
 """
 import os
 import warnings
+import math
 
 import audioread
 import numpy as np
@@ -112,7 +113,8 @@ def write_wav(path, y, sr, norm=True):
     valid_audio(y, mono=False)
     # Normalize
     if norm:
-        y = y / np.max(np.abs(y))
+        headroom = 0.00003
+        y = y / (np.max(np.abs(y)) + headroom)
     else:
         y = y
     # Convert to 16bit int
@@ -362,26 +364,50 @@ def normalize(S, norm=np.inf, axis=0):
     return S / length
 
 
-def delay(y, time, sr):
+def fractional_delay(y, time, sr, mode='conv'):
     """
     Prepend zeros to delay signal by time seconds
-    Upsample, delay, then resample if delay is a fractional # of samples
+    Use linear interpolation through convolution for fractional delay
     """
-    sampletime = time * sr
-    decimals = sum(c != '0' for c in str(round(sampletime % 1, 4))[2:])
-    new_sr = None
-    if decimals > 0:
-        new_sr = sr * (decimals + 1)
-        sampletime = time * new_sr
-        y = resample(y, sr, new_sr)
+    samples = time * sr
+    if isinstance(samples, int) or samples.is_integer():
+        return delay(y, samples)
+
+    if mode == 'upsample':
+        # fractional delay by upsampling
+        decimals = sum(c != '0' for c in str(round(samples % 1, 4))[2:])
+        new_sr = None
+        if decimals > 0:
+            new_sr = sr * (decimals + 1)
+            samples = time * new_sr
+            y = resample(y, sr, new_sr)
+        y = delay(y, samples)
+        if new_sr:
+            y = resample(y, new_sr, sr)
+    else:
+        ref = np.max(np.abs(y))
+        f, i = math.modf(samples)
+        # integer delay
+        y = delay(y, i)
+        # linear interpolation for fractional part
+        y = np.convolve(y, [f, i-f], "same")
+        # normalize back go original max value
+        y = y * ref / np.max(np.abs(y))
+    return y
+
+
+def delay(y, N, sr=None):
+    """
+    Prepend zeros to delay signal by N samples (or N seconds if sr provided)
+    """
+    if sr:
+        N = N * sr
     y = np.pad(
         y,
-        pad_width=[round(sampletime), 0],
+        pad_width=[round(N), 0],
         mode='constant',
         constant_values=0
     )
-    if new_sr:
-        y = resample(y, new_sr, sr)
     return y
 
 
@@ -390,6 +416,8 @@ def sum_signals(signals):
     Sum together a list of mono signals
     append zeros to match the longest array
     """
+    if not signals:
+        return np.array([])
     max_length = max(len(sig) for sig in signals)
     y = np.zeros(max_length)
     for sig in signals:
