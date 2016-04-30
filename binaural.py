@@ -3,6 +3,7 @@ import math
 import argparse
 import logging
 
+import numpy as np
 import scipy.signal
 
 import audio
@@ -14,6 +15,7 @@ def hrtf_file(audio_path, azimuth, elevation=0, distance=1, ear_distance=0.215, 
     """
     Read mono audio file and write binaural wav file to output
     """
+    logger.info('Loading signal into memory: {}'.format(audio_path))
     y, sr = audio.load(audio_path)
     y = hrtf(y, sr, azimuth, elevation, distance, ear_distance)
     if output:
@@ -35,23 +37,27 @@ def hrtf(y, sr, azimuth, elevation=0, distance=1, ear_distance=0.215):
     ITD, d_left, d_right = compute_itd(azimuth, elevation, distance, ear_distance)
     logger.debug('ITD: {}'.format(ITD))
     left, right = apply_itd(y, y, sr, ITD)
-    left, right = apply_iid(left, right, sr, azimuth, ear_distance/2, d_left, d_right)
+    left, right = apply_iid(left, right, sr, azimuth, elevation, ear_distance/2, d_left, d_right)
+    left = prtf(left, elevation, sr)
+    right = prtf(right, elevation, sr)
     y = audio.channel_merge([left, right])
     return y
 
 
-def apply_iid(left, right, sr, azimuth, radius, d_left, d_right, ref_distance=1):
+def apply_iid(left, right, sr, azimuth, elevation, radius, d_left, d_right, ref_distance=1):
+    logger.info('Applying ILD to signal')
     logger.debug('d_left: {}'.format(d_left))
     logger.debug('d_right: {}'.format(d_right))
     # apply headshadow
-    b, a = headshadow_filter_coefficients(azimuth+90, radius, sr)
+    b, a = headshadow_filter_coefficients(azimuth+90, elevation, radius, sr)
     logger.debug('left headshadow: {}'.format([b, a]))
     left = scipy.signal.filtfilt(b, a, left)
-    b, a = headshadow_filter_coefficients(azimuth-90, radius, sr)
+    b, a = headshadow_filter_coefficients(azimuth-90, elevation, radius, sr)
     logger.debug('right headshadow: {}'.format([b, a]))
     right = scipy.signal.filtfilt(b, a, right)
 
     # attenuate for distance traveled
+    logger.info('Applying attenuation')
     logger.debug('left_attenuation: {}'.format(ref_distance / d_left))
     logger.debug('right_attenuation: {}'.format(ref_distance / d_right))
     left = left * (ref_distance / d_left)
@@ -59,14 +65,14 @@ def apply_iid(left, right, sr, azimuth, radius, d_left, d_right, ref_distance=1)
     return left, right
 
 
-def headshadow_filter_coefficients(incident_angle, r, sr):
+def headshadow_filter_coefficients(inc_angle, elevation, r, sr):
     """
     Compute the filter coefficients to a single zero, single pole filter
     that estimates headshadow effects of a head with radius r
     """
-    theta = abs(incident_angle)
-    while theta > 180:
-        theta = theta - 180
+    logger.info('Computing headshadow filter coefficients')
+    theta = math.acos(math.cos(abs(inc_angle)*2*math.pi/360)*math.cos(abs(elevation)*2*math.pi/360))
+    theta = theta * 360 / (2*math.pi)
     logger.debug('theta: {}'.format(theta))
     theta = math.radians(theta)
     theta0 = 2.618
@@ -94,22 +100,27 @@ def compute_itd(azimuth, elevation=0, distance=1, ear_distance=0.215):
         Distance to left ear
         Distance to right ear
     """
+    logger.info('Computing ITD')
     c = 343.2
     theta = math.radians(azimuth)
-    phi = math.radians(elevation)
+    phi = abs(math.radians(elevation))
     radius = ear_distance/2
 
-    # set theta between -180:180 degrees
-    theta = theta % math.pi
-    d1 = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.sin(abs(theta)))
+    # set theta between 0:180 degrees
+    theta = abs(theta % math.pi)
+    d1 = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.sin(theta))
     # inc_angle should be equivalent to pi/2 - theta, but works for values >90
     inc_angle = math.acos((distance**2 + radius**2 - d1**2) / (2*distance*radius))
     tangent = math.sqrt(distance**2 - radius**2)
-    d2 = tangent + radius * (math.pi - inc_angle - math.acos(radius / distance))
+    arc = radius * (math.pi - max(inc_angle, phi) - math.acos(radius / distance))
+    logger.debug('arc: {}'.format(arc))
+    d2 = tangent + arc
     # Use original d1 for computing d2,
     # but actual d1 may also wrap around head when distance and theta are small
     if tangent < d1:
         d1 = tangent + radius*(inc_angle - math.acos(radius / distance))
+    if phi > inc_angle:
+        d1 = tangent + radius*(phi - math.acos(radius / distance))
     delta_d = abs(d2 - d1)
     if -180 < azimuth < 0 or 180 < azimuth < 360:
         delta_d = -delta_d
@@ -147,11 +158,66 @@ def compute_itd_legacy(azimuth, elevation=0, distance=1, ear_distance=0.215):
 
 
 def apply_itd(left, right, sr, ITD):
+    logger.info('Applying ITD delay')
     if ITD > 0:
         left = audio.fractional_delay(left, ITD, sr)
     if ITD < 0:
         right = audio.fractional_delay(right, abs(ITD), sr)
     return left, right
+
+
+def prtf(y, elevation, sr):
+    logger.info('Applying PRTF filters')
+
+    freq = np.interp(elevation, (-90, 90), (1000, 4500))
+    mag = 10
+    res1 = resonance_filter(freq, 6000, mag, sr)
+
+    freq = np.interp(elevation, (-90, 0, 30, 90), (11000, 13000, 8000, 10000))
+    mag = 10
+    res2 = resonance_filter(11000, 5000, mag, sr)
+
+    freq = np.interp(elevation, (-90, -20, 0, 90), (6000, 6000, 6500, 10000))
+    mag = np.interp(elevation, (-90, -20, 0, 90), (15, 15, 10, 1))
+    notch1 = notch_filter(freq, 200, mag, sr)
+
+    freq = np.interp(elevation, (-90, 0, 90), (10000, 9000, 9000))
+    mag = np.interp(elevation, (-90, -20, 0, 90), (25, 25, 20, 1))
+    notch2 = notch_filter(freq, mag, 25, sr)
+
+    freq = np.interp(elevation, (-90, 90), (10000, 14000))
+    mag = np.interp(elevation, (-90, -20, 0, 30, 40, 80, 90), (10, 20, 20, 5, 20, 15, 1))
+    notch3 = notch_filter(freq, 200, mag, sr)
+
+    y1 = scipy.signal.filtfilt(*res1, y)
+    y2 = scipy.signal.filtfilt(*res2, y)
+    y = audio.sum_signals([y1, y2])
+    y = scipy.signal.filtfilt(*notch1, y)
+    y = scipy.signal.filtfilt(*notch2, y)
+    y = scipy.signal.filtfilt(*notch3, y)
+
+    return y
+
+
+def resonance_filter(freq, bandwidth, magnitude, sr):
+    h = 1 / (1 + math.tan(math.pi*bandwidth/sr));
+    d = -math.cos(2*math.pi*freq/sr)
+    V0 = 10**(magnitude/20)
+
+    b = [V0*(1 - h), 0, V0*(h-1)]
+    a = [1, 2*d*h, 2*h - 1]
+    return b, a
+
+
+def notch_filter(freq, bandwidth, magnitude, sr):
+    d = -math.cos(2*math.pi*freq/sr)
+    V0 = 10**(-magnitude/20)
+    H0 = V0 - 1
+    k = (math.tan(math.pi*bandwidth/sr) - V0) / (math.tan(math.pi * bandwidth/sr) + V0)
+
+    b = [1+(1+k)*H0/2, d*(1-k), (-k - (1+k)*H0/2)]
+    a = [1, d*(1-k), -k]
+    return b, a
 
 
 if __name__ == '__main__':
