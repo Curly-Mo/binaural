@@ -108,19 +108,16 @@ def compute_itd(azimuth, elevation=0, distance=1, ear_distance=0.215):
 
     # set theta between 0:180 degrees
     theta = abs(theta % math.pi)
-    d1 = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.sin(theta))
-    # inc_angle should be equivalent to pi/2 - theta, but works for values >90
-    inc_angle = math.acos((distance**2 + radius**2 - d1**2) / (2*distance*radius))
+    inc_angle = math.acos(math.cos(abs(math.pi/2 - theta)) * math.cos(phi))
+    d1 = math.sqrt(distance**2 + radius**2 - 2*distance*radius*math.cos(inc_angle))
     tangent = math.sqrt(distance**2 - radius**2)
-    arc = radius * (math.pi - max(inc_angle, phi) - math.acos(radius / distance))
+    arc = radius * (math.pi - inc_angle - math.acos(radius / distance))
     logger.debug('arc: {}'.format(arc))
     d2 = tangent + arc
     # Use original d1 for computing d2,
     # but actual d1 may also wrap around head when distance and theta are small
     if tangent < d1:
         d1 = tangent + radius*(inc_angle - math.acos(radius / distance))
-    if phi > inc_angle:
-        d1 = tangent + radius*(phi - math.acos(radius / distance))
     delta_d = abs(d2 - d1)
     if -180 < azimuth < 0 or 180 < azimuth < 360:
         delta_d = -delta_d
